@@ -7,11 +7,12 @@ import (
 
 // Task represents a calendar task/event
 type Task struct {
-	Summary     string `json:"summary"`
-	Start       string `json:"start"`
-	End         string `json:"end"`
-	Description string `json:"description,omitempty"`
-	Location    string `json:"location,omitempty"`
+Summary     string `json:"summary"`
+Start       string `json:"start"`
+End         string `json:"end"`
+EventID     string `json:"event_id,omitempty"`
+Description string `json:"description,omitempty"`
+Location    string `json:"location,omitempty"`
 }
 
 // ParsedTask represents a task with parsed time

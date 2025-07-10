@@ -30,27 +30,26 @@ func NewManager(config models.AIConfig) *Manager {
 }
 
 // GeneratePlan tries AI clients in order
+// GeneratePlan tries AI clients in order
+// GeneratePlan tries AI clients in order
 func (m *Manager) GeneratePlan(prompt string) (string, error) {
 	if len(m.clients) == 0 {
 		return "", fmt.Errorf("no GitHub token configured. Please add GITHUB_TOKEN to your .env file")
 	}
 
 	var lastError error
-	for i, client := range m.clients {
-		fmt.Printf("🤖 Trying %s (%d/%d)...\n", client.GetName(), i+1, len(m.clients))
-		
+	for _, client := range m.clients { // Remove unused 'i' variable
 		result, err := client.GeneratePlan(prompt)
 		if err == nil {
-			fmt.Printf("✅ Successfully used %s\n", client.GetName())
 			return result, nil
 		}
 		
-		fmt.Printf("⚠️ %s failed: %v\n", client.GetName(), err)
 		lastError = err
 	}
 	
 	return "", fmt.Errorf("GitHub Models failed: %v", lastError)
 }
+
 
 // GetAvailableClients returns list of available clients
 func (m *Manager) GetAvailableClients() []string {

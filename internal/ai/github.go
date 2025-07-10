@@ -32,6 +32,7 @@ func (g *GitHubClient) GeneratePlan(prompt string) (string, error) {
 }
 
 // GetPlanFromGitHub - Uses the correct GitHub Models endpoint from the C# sample
+// GetPlanFromGitHub - Uses the correct GitHub Models endpoint from the C# sample
 func GetPlanFromGitHub(apiKey, prompt string) (string, error) {
 	// Correct GitHub Models endpoint from the C# sample
 	url := "https://models.github.ai/inference/chat/completions"
@@ -40,17 +41,21 @@ func GetPlanFromGitHub(apiKey, prompt string) (string, error) {
 	models := []string{"gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"}
 	
 	for _, model := range models {
-		fmt.Printf("🔍 Trying GitHub Models with %s...\n", model)
+		// Remove these debug lines:
+		// fmt.Printf("🔍 Trying GitHub Models with %s...\n", model)
 		result, err := makeGitHubRequest(url, apiKey, prompt, model)
 		if err == nil {
-			fmt.Printf("✅ Success with model: %s\n", model)
+			// Remove this debug line:
+			// fmt.Printf("✅ Success with model: %s\n", model)
 			return result, nil
 		}
-		fmt.Printf("❌ Model %s failed: %v\n", model, err)
+		// Remove this debug line:
+		// fmt.Printf("❌ Model %s failed: %v\n", model, err)
 	}
 	
 	return "", fmt.Errorf("all GitHub Models failed")
 }
+
 
 func makeGitHubRequest(url, apiKey, prompt, model string) (string, error) {
 	reqBody := map[string]interface{}{
