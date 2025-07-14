@@ -13,6 +13,7 @@ type QueryResponse struct {
 	Answer  string `json:"answer"`
 	Events  []Task `json:"events,omitempty"`
 	Success bool   `json:"success"`
+	Action  string `json:"action,omitempty"` // "create", "view", "delete"
 	Error   string `json:"error,omitempty"`
 }
 

@@ -17,12 +17,12 @@ import (
 
 // EnhancedScheduler includes both scheduling and query capabilities
 type EnhancedScheduler struct {
-	*Scheduler
-	queryHandler *QueryHandler
+	calendarClient   *calendar.Client
+	aiManager        *ai.Manager
+	conflictChecker  *ConflictChecker
+	promptGenerator  *PromptGenerator
+	queryHandler     *QueryHandler
 }
-
-
-
 
 // GetCalendarClient returns the calendar client
 func (es *EnhancedScheduler) GetCalendarClient() *calendar.Client {
@@ -32,11 +32,6 @@ func (es *EnhancedScheduler) GetCalendarClient() *calendar.Client {
 // GetAIManager returns the AI manager
 func (es *EnhancedScheduler) GetAIManager() *ai.Manager {
 	return es.aiManager
-}
-
-// GetFallbackPlanner returns the fallback planner
-func (es *EnhancedScheduler) GetFallbackPlanner() *ai.FallbackPlanner {
-	return es.fallbackPlanner
 }
 
 // GetConflictChecker returns the conflict checker
@@ -61,12 +56,27 @@ func (es *EnhancedScheduler) GetQueryService() *calendar.QueryService {
 
 // NewEnhancedScheduler creates a new enhanced scheduler with query capabilities
 func NewEnhancedScheduler(calendarService *calendarv3.Service, aiConfig models.AIConfig, timeZone string) *EnhancedScheduler {
-	scheduler := NewScheduler(calendarService, aiConfig)
+	// Create calendar client
+	calendarClient := calendar.NewClient(calendarService)
+	
+	// Create AI manager
+	aiManager := ai.NewManager(aiConfig)
+	
+	// Create conflict checker
+	conflictChecker := NewConflictChecker()
+	
+	// Create prompt generator
+	promptGenerator := NewPromptGenerator()
+	
+	// Create query handler
 	queryHandler := NewQueryHandler(calendarService, aiConfig, timeZone)
 
 	return &EnhancedScheduler{
-		Scheduler:    scheduler,
-		queryHandler: queryHandler,
+		calendarClient:   calendarClient,
+		aiManager:        aiManager,
+		conflictChecker:  conflictChecker,
+		promptGenerator:  promptGenerator,
+		queryHandler:     queryHandler,
 	}
 }
 
@@ -74,18 +84,11 @@ func NewEnhancedScheduler(calendarService *calendarv3.Service, aiConfig models.A
 func (es *EnhancedScheduler) Run(ctx context.Context) error {
 	fmt.Println("🚀 Starting Enhanced LLM Calendar Assistant...")
 
-	// Debug calendar access
-	if err := es.calendarClient.Debug(); err != nil {
-		return fmt.Errorf("calendar debug failed: %v", err)
-	}
-
 	// Show main menu
 	return es.showMainMenu(ctx)
 }
 
 // showMainMenu displays the main menu and handles user choices
-// Update the showMainMenu method to handle the return from query mode:
-
 func (es *EnhancedScheduler) showMainMenu(ctx context.Context) error {
 	for {
 		fmt.Println("\n🎯 What would you like to do?")
@@ -114,7 +117,6 @@ func (es *EnhancedScheduler) showMainMenu(ctx context.Context) error {
 				}
 				fmt.Printf("❌ Query error: %v\n", err)
 			}
-			// If no error or non-exit error, continue to main menu
 		case "3":
 			if err := es.HandleSearch(ctx); err != nil {
 				fmt.Printf("❌ Search error: %v\n", err)
@@ -132,8 +134,7 @@ func (es *EnhancedScheduler) showMainMenu(ctx context.Context) error {
 	}
 }
 
-
-// HandleScheduling handles the scheduling workflow (EXPORTED)
+// HandleScheduling handles the scheduling workflow
 func (es *EnhancedScheduler) HandleScheduling(ctx context.Context) error {
 	fmt.Println("\n📅 SCHEDULING MODE")
 	
@@ -160,8 +161,7 @@ func (es *EnhancedScheduler) HandleScheduling(ctx context.Context) error {
 	planJSON, err := es.aiManager.GeneratePlan(prompt)
 	if err != nil {
 		fmt.Printf("⚠️ AI planning failed: %v\n", err)
-		fmt.Println("🔄 Creating fallback plan...")
-		return es.executeFallbackPlan(userInput, existingTasks)
+		return fmt.Errorf("AI planning failed: %v", err)
 	}
 
 	fmt.Println("✅ AI Generated plan:\n", planJSON)
@@ -170,14 +170,13 @@ func (es *EnhancedScheduler) HandleScheduling(ctx context.Context) error {
 	tasks, err := utils.ParsePlan(planJSON)
 	if err != nil {
 		fmt.Printf("⚠️ Error parsing AI response: %v\n", err)
-		fmt.Println("🔄 Creating fallback plan...")
-		return es.executeFallbackPlan(userInput, existingTasks)
+		return fmt.Errorf("failed to parse AI response: %v", err)
 	}
 
 	return es.executePlan(tasks, existingTasks)
 }
 
-// HandleSearch handles calendar search functionality (EXPORTED)
+// HandleSearch handles calendar search functionality
 func (es *EnhancedScheduler) HandleSearch(ctx context.Context) error {
 	fmt.Println("\n🔍 SEARCH MODE")
 	fmt.Print("Enter search keyword: ")
@@ -211,7 +210,7 @@ func (es *EnhancedScheduler) HandleSearch(ctx context.Context) error {
 	return nil
 }
 
-// HandleStats handles calendar statistics display (EXPORTED)
+// HandleStats handles calendar statistics display
 func (es *EnhancedScheduler) HandleStats(ctx context.Context) error {
 	fmt.Println("\n📊 CALENDAR STATISTICS")
 	
@@ -224,14 +223,12 @@ func (es *EnhancedScheduler) HandleStats(ctx context.Context) error {
 	return nil
 }
 
-
-// RunInteractiveQuery runs an interactive query session (EXPORTED)
+// RunInteractiveQuery runs an interactive query session
 func (es *EnhancedScheduler) RunInteractiveQuery(ctx context.Context) error {
 	return es.queryHandler.RunInteractiveQuery(ctx)
 }
 
-
-// getUserInput gets user input for new tasks (inherited from base Scheduler)
+// getUserInput gets user input for new tasks
 func (es *EnhancedScheduler) getUserInput() string {
 	fmt.Println("\n💬 What would you like to add to your schedule?")
 	fmt.Println("Example: '1 hour gym, 9 to 5 work, 30 min lunch break'")
@@ -249,14 +246,38 @@ func (es *EnhancedScheduler) getUserInput() string {
 	return userInput
 }
 
+// executePlan executes the parsed plan
+func (es *EnhancedScheduler) executePlan(tasks []models.Task, existingTasks []models.Task) error {
+	fmt.Printf("📋 Executing plan with %d tasks\n", len(tasks))
+	
+	// Filter out conflicting tasks
+	var validTasks []models.Task
+	for _, task := range tasks {
+		if !es.conflictChecker.HasTimeConflict(task, existingTasks) {
+			validTasks = append(validTasks, task)
+		} else {
+			fmt.Printf("⚠️ Skipping conflicting task: %s\n", task.Summary)
+		}
+	}
+
+	if len(validTasks) == 0 {
+		fmt.Println("❌ No valid tasks to create (all have conflicts)")
+		return nil
+	}
+
+	// Create events
+	eventsAdded, err := es.calendarClient.CreateMultipleEvents(validTasks)
+	if err != nil {
+		return fmt.Errorf("failed to create events: %v", err)
+	}
+
+	fmt.Printf("✅ Successfully created %d events\n", eventsAdded)
+	return nil
+}
+
 // RunQuickQuery runs a single query without the interactive menu
 func (es *EnhancedScheduler) RunQuickQuery(ctx context.Context, question string) error {
 	fmt.Printf("🚀 Quick Query Mode: %s\n", question)
-
-	// Debug calendar access
-	if err := es.calendarClient.Debug(); err != nil {
-		return fmt.Errorf("calendar debug failed: %v", err)
-	}
 
 	response, err := es.queryHandler.HandleQuery(ctx, question)
 	if err != nil {
@@ -286,11 +307,6 @@ func (es *EnhancedScheduler) RunQuickQuery(ctx context.Context, question string)
 // RunBatchQueries processes multiple queries at once
 func (es *EnhancedScheduler) RunBatchQueries(ctx context.Context, questions []string) error {
 	fmt.Println("🚀 Batch Query Mode")
-
-	// Debug calendar access
-	if err := es.calendarClient.Debug(); err != nil {
-		return fmt.Errorf("calendar debug failed: %v", err)
-	}
 
 	responses, err := es.queryHandler.HandleBatchQueries(ctx, questions)
 	if err != nil {
@@ -354,7 +370,6 @@ func (es *EnhancedScheduler) ShowHelp() {
 	fmt.Println()
 }
 
-
 // GetAvailableCommands returns a list of available commands
 func (es *EnhancedScheduler) GetAvailableCommands() []string {
 	return []string{
@@ -367,6 +382,7 @@ func (es *EnhancedScheduler) GetAvailableCommands() []string {
 	}
 }
 
+// ProcessCommand processes a single command
 // ProcessCommand processes a single command
 func (es *EnhancedScheduler) ProcessCommand(ctx context.Context, command string, args []string) error {
 	switch strings.ToLower(command) {

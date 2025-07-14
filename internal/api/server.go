@@ -35,6 +35,7 @@ func (s *Server) Router() *mux.Router {
 }
 
 // setupRoutes sets up all API routes
+// setupRoutes sets up all API routes
 func (s *Server) setupRoutes() {
 	// Add CORS middleware
 	s.router.Use(corsMiddleware)
@@ -42,21 +43,16 @@ func (s *Server) setupRoutes() {
 	// API routes
 	api := s.router.PathPrefix("/api").Subrouter()
 	
-	// Scheduling
-	api.HandleFunc("/schedule", s.handleSchedule).Methods("POST")
+	// api.HandleFunc("/schedule", s.handleSchedule).Methods("POST")
+	// api.HandleFunc("/query", s.handleQuery).Methods("POST")
+	// api.HandleFunc("/events/today", s.handleTodaysEvents).Methods("GET")
+	// api.HandleFunc("/events/upcoming", s.handleUpcomingEvents).Methods("GET")
+	// api.HandleFunc("/search", s.handleSearch).Methods("POST")
+	// api.HandleFunc("/stats", s.handleStats).Methods("GET")
+	// api.HandleFunc("/delete", s.handleDelete).Methods("POST")
 	
-	// Queries
-	api.HandleFunc("/query", s.handleQuery).Methods("POST")
-	
-	// Events
-	api.HandleFunc("/events/today", s.handleTodaysEvents).Methods("GET")
-	api.HandleFunc("/events/upcoming", s.handleUpcomingEvents).Methods("GET")
-	
-	// Search
-	api.HandleFunc("/search", s.handleSearch).Methods("POST")
-	
-	// Statistics
-	api.HandleFunc("/stats", s.handleStats).Methods("GET")
+	// KEEP ONLY THIS:
+	api.HandleFunc("/unified", s.handleUnifiedQuery).Methods("POST")
 	
 	// Health check
 	s.router.HandleFunc("/health", s.handleHealth).Methods("GET")
@@ -64,6 +60,8 @@ func (s *Server) setupRoutes() {
 	// Root endpoint with API documentation
 	s.router.HandleFunc("/", s.handleRoot).Methods("GET")
 }
+
+
 
 // corsMiddleware adds CORS headers
 func corsMiddleware(next http.Handler) http.Handler {

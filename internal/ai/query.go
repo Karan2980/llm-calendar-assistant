@@ -7,17 +7,14 @@ import (
 	"time"
 
 	"github.com/Karan2980/llm-planner-golang-project/internal/calendar"
-
 	"github.com/Karan2980/llm-planner-golang-project/internal/models"
 	"github.com/Karan2980/llm-planner-golang-project/pkg/utils"
 )
 
 // QueryProcessor handles natural language queries about calendar
-
-// QueryProcessor handles natural language queries about calendar
 type QueryProcessor struct {
 	aiManager      *Manager
-	calendarClient *calendar.Client // Use actual calendar client type
+	calendarClient *calendar.Client
 }
 
 // NewQueryProcessor creates a new query processor
@@ -40,16 +37,493 @@ func (q *QueryProcessor) ProcessQuery(question string, context models.QueryConte
 }
 
 // processRuleBasedQuery handles common queries with simple rules
+// processRuleBasedQuery handles common queries with simple rules
 func (q *QueryProcessor) processRuleBasedQuery(question string, context models.QueryContext) *models.QueryResponse {
 	question = strings.ToLower(strings.TrimSpace(question))
 
-	// Check for scheduling queries first
-	if q.isSchedulingQuery(question) {
-		return q.handleSchedulingQuery(question, context)
+	// Check for delete intent first (highest priority)
+	if q.isDeleteRequest(question) {
+		response := q.handleDeleteIntent(question, context)
+		response.Action = "delete"
+		return response
 	}
 
-	// Show all upcoming events
-	if strings.Contains(question, "upcoming events") || strings.Contains(question, "show me all") {
+	// Check for scheduling queries (must come before other checks)
+	if q.isSchedulingQuery(question) {
+		response := q.handleSchedulingQuery(question, context)
+		response.Action = "create"
+		return response
+	}
+
+	// Events for tomorrow or a specific day
+	if strings.Contains(question, "tomorrow") || strings.Contains(question, "next day") || strings.Contains(question, "day after tomorrow") {
+		response := q.getEventsForSpecificDay(question, context)
+		response.Action = "view"
+		return response
+	}
+
+	// Show/display all upcoming events
+	if (strings.Contains(question, "upcoming") && strings.Contains(question, "event")) ||
+		(strings.Contains(question, "show") && strings.Contains(question, "event")) ||
+		(strings.Contains(question, "display") && strings.Contains(question, "event")) {
+		response := q.getAllUpcomingEvents(context)
+		response.Action = "view"
+		return response
+	}
+
+	// Next meeting queries
+	if strings.Contains(question, "next meeting") || strings.Contains(question, "next event") {
+		response := q.findNextEvent(context)
+		response.Action = "view"
+		return response
+	}
+
+	// Gym timing queries
+	if strings.Contains(question, "gym") && (strings.Contains(question, "time") || strings.Contains(question, "when")) {
+		response := q.findEventByKeyword("gym", context)
+		response.Action = "view"
+		return response
+	}
+
+	// Work timing queries
+	if strings.Contains(question, "work") && (strings.Contains(question, "time") || strings.Contains(question, "when")) {
+		response := q.findEventByKeyword("work", context)
+		response.Action = "view"
+		return response
+	}
+
+	// Lunch timing queries
+	if strings.Contains(question, "lunch") && (strings.Contains(question, "time") || strings.Contains(question, "when")) {
+		response := q.findEventByKeyword("lunch", context)
+		response.Action = "view"
+		return response
+	}
+
+	// Today's schedule
+	if strings.Contains(question, "today") && (strings.Contains(question, "schedule") || strings.Contains(question, "events")) {
+		response := q.getTodaysSchedule(context)
+		response.Action = "view"
+		return response
+	}
+
+	// Free time queries
+	if strings.Contains(question, "free") || strings.Contains(question, "available") {
+		response := q.findFreeTime(context)
+		response.Action = "view"
+		return response
+	}
+
+	return nil // No rule-based match found
+}
+
+
+// isDeleteRequest checks if the question is asking to delete events
+func (q *QueryProcessor) isDeleteRequest(question string) bool {
+	question = strings.ToLower(strings.TrimSpace(question))
+	deleteKeywords := []string{
+		"delete", "remove", "cancel", "clear", "erase", "drop",
+		"get rid of", "eliminate", "destroy", "wipe", "purge",
+	}
+	
+	for _, keyword := range deleteKeywords {
+		if strings.Contains(question, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+// isSchedulingQuery checks if the question is asking to schedule/create events
+func (q *QueryProcessor) isSchedulingQuery(question string) bool {
+	question = strings.ToLower(strings.TrimSpace(question))
+	scheduleKeywords := []string{
+		"schedule", "book", "add", "create", "set up", "plan",
+		"arrange", "organize", "make", "put", "insert", "place",
+	}
+	
+	timeKeywords := []string{
+		"at", "on", "tomorrow", "today", "next week", "monday", "tuesday",
+		"wednesday", "thursday", "friday", "saturday", "sunday",
+		"am", "pm", "o'clock", ":", "morning", "afternoon", "evening",
+	}
+	
+	hasScheduleKeyword := false
+	hasTimeKeyword := false
+	
+	for _, keyword := range scheduleKeywords {
+		if strings.Contains(question, keyword) {
+			hasScheduleKeyword = true
+			break
+		}
+	}
+	
+	for _, keyword := range timeKeywords {
+		if strings.Contains(question, keyword) {
+			hasTimeKeyword = true
+			break
+		}
+	}
+	
+	return hasScheduleKeyword && hasTimeKeyword
+}
+
+// handleDeleteIntent handles delete requests
+func (q *QueryProcessor) handleDeleteIntent(question string, context models.QueryContext) *models.QueryResponse {
+	allEvents := append(context.TodaysEvents, context.UpcomingEvents...)
+	var eventsToDelete []models.Task
+	
+	// Check for "all" keyword
+	if strings.Contains(question, "all") {
+		if strings.Contains(question, "upcoming") {
+			// Delete all upcoming events
+			for _, event := range allEvents {
+				eventTime, err := time.Parse(time.RFC3339, event.Start)
+				if err != nil {
+					continue
+				}
+				if eventTime.After(context.CurrentTime) {
+					eventsToDelete = append(eventsToDelete, event)
+				}
+			}
+		} else if strings.Contains(question, "today") {
+			// Delete all today's events
+			eventsToDelete = context.TodaysEvents
+		} else {
+			// Delete all events
+			eventsToDelete = allEvents
+		}
+	} else {
+		// Try to parse a specific date from the question
+		dateStr := extractDateFromQuestion(question)
+		var targetDate time.Time
+		var dateParsed bool
+		
+		if dateStr != "" {
+			// Try multiple formats
+			for _, layout := range []string{"2 Jan 2006", "2 January 2006", "02-01-2006", "2006-01-02", "2nd January 2006", "2nd Jan 2006", "2/1/2006", "2.1.2006", "2 july 2006", "2nd july 2006"} {
+				t, err := time.Parse(layout, dateStr)
+				if err == nil {
+					targetDate = t
+					dateParsed = true
+					break
+				}
+			}
+		}
+
+		if dateParsed {
+			// Delete all events on that date
+			for _, event := range allEvents {
+				eventTime, err := time.Parse(time.RFC3339, event.Start)
+				if err != nil {
+					continue
+				}
+				if eventTime.Format("2006-01-02") == targetDate.Format("2006-01-02") {
+					eventsToDelete = append(eventsToDelete, event)
+				}
+			}
+		} else {
+			// Fallback: match by summary keyword
+			keyword := extractEventKeyword(question)
+			if keyword != "" {
+				for _, event := range allEvents {
+					if strings.Contains(strings.ToLower(event.Summary), keyword) {
+						eventsToDelete = append(eventsToDelete, event)
+					}
+				}
+			}
+		}
+	}
+
+	if len(eventsToDelete) == 0 {
+		return &models.QueryResponse{
+			Answer:  "No matching events found to delete.",
+			Success: false,
+		}
+	}
+
+	// Return events to be deleted (actual deletion handled by API layer)
+	var eventNames []string
+	for _, event := range eventsToDelete {
+		eventNames = append(eventNames, event.Summary)
+	}
+
+	answer := fmt.Sprintf("Found %d event(s) to delete: %s", len(eventsToDelete), strings.Join(eventNames, ", "))
+	
+	return &models.QueryResponse{
+		Answer:  answer,
+		Success: true,
+		Events:  eventsToDelete,
+	}
+}
+
+// handleAdvancedScheduling handles complex scheduling requests
+func (q *QueryProcessor) handleAdvancedScheduling(question string, context models.QueryContext) *models.QueryResponse {
+	events := q.parseSchedulingRequest(question, context)
+	
+	if len(events) == 0 {
+		return &models.QueryResponse{
+			Answer:  "I couldn't understand the event details. Please specify what you want to schedule and when.",
+			Success: false,
+			Action:  "create",
+		}
+	}
+
+	var eventNames []string
+	for _, event := range events {
+		eventNames = append(eventNames, event.Summary)
+	}
+
+	answer := fmt.Sprintf("I'll create %d event(s): %s", len(events), strings.Join(eventNames, ", "))
+	
+	return &models.QueryResponse{
+		Answer:  answer,
+		Success: true,
+		Events:  events,
+		Action:  "create",
+	}
+}
+
+// parseSchedulingRequest parses natural language scheduling requests
+func (q *QueryProcessor) parseSchedulingRequest(question string, context models.QueryContext) []models.Task {
+	var events []models.Task
+	now := context.CurrentTime
+	
+	// Enhanced parsing logic
+	question = strings.ToLower(question)
+	
+	// Extract event title with better pattern matching
+	title := q.extractEventTitle(question)
+	
+	// Extract date
+	targetDate := q.extractDate(question, now)
+	
+	// Extract time
+	startTime := q.extractTime(question, targetDate)
+	
+	// Extract duration
+	duration := q.extractDuration(question)
+	
+	endTime := startTime.Add(duration)
+	
+	event := models.Task{
+		Summary: title,
+		Start:   startTime.Format(time.RFC3339),
+		End:     endTime.Format(time.RFC3339),
+	}
+	
+	events = append(events, event)
+	return events
+}
+
+// extractEventTitle extracts the event title from the question
+func (q *QueryProcessor) extractEventTitle(question string) string {
+	// Common patterns for event titles
+	patterns := map[string]string{
+		"team meet":     "Team Meeting",
+		"team meeting":  "Team Meeting",
+		"standup":       "Standup Meeting",
+		"daily standup": "Daily Standup",
+		"gym":           "Gym Session",
+		"workout":       "Workout",
+		"lunch":         "Lunch",
+		"dinner":        "Dinner",
+		"breakfast":     "Breakfast",
+		"call":          "Call",
+		"interview":     "Interview",
+		"presentation":  "Presentation",
+		"review":        "Review Meeting",
+		"planning":      "Planning Session",
+	}
+	
+	for pattern, title := range patterns {
+		if strings.Contains(question, pattern) {
+			return title
+		}
+	}
+	
+	// Try to extract from "create/schedule X" patterns
+	words := strings.Fields(question)
+	for i, word := range words {
+		if (word == "create" || word == "schedule" || word == "add" || word == "book") && i+1 < len(words) {
+			nextWord := words[i+1]
+			if nextWord == "a" || nextWord == "an" {
+				if i+2 < len(words) {
+					return strings.Title(words[i+2])
+				}
+			} else {
+				return strings.Title(nextWord)
+			}
+		}
+	}
+	
+	return "Event"
+}
+
+// extractDate extracts the target date from the question
+func (q *QueryProcessor) extractDate(question string, now time.Time) time.Time {
+	if strings.Contains(question, "tomorrow") {
+		return now.AddDate(0, 0, 1)
+	} else if strings.Contains(question, "today") {
+		return now
+	} else if strings.Contains(question, "next week") {
+		return now.AddDate(0, 0, 7)
+	} else if strings.Contains(question, "monday") {
+		return q.getNextWeekday(now, time.Monday)
+	} else if strings.Contains(question, "tuesday") {
+		return q.getNextWeekday(now, time.Tuesday)
+	} else if strings.Contains(question, "wednesday") {
+		return q.getNextWeekday(now, time.Wednesday)
+	} else if strings.Contains(question, "thursday") {
+		return q.getNextWeekday(now, time.Thursday)
+	} else if strings.Contains(question, "friday") {
+		return q.getNextWeekday(now, time.Friday)
+	} else if strings.Contains(question, "saturday") {
+		return q.getNextWeekday(now, time.Saturday)
+	} else if strings.Contains(question, "sunday") {
+		return q.getNextWeekday(now, time.Sunday)
+	}
+	
+	return now.AddDate(0, 0, 1) // Default to tomorrow
+}
+
+// extractTime extracts the time from the question
+// extractTime extracts the time from the question
+func (q *QueryProcessor) extractTime(question string, targetDate time.Time) time.Time {
+	// Time patterns
+	timePatterns := map[string]int{
+		"1:00 pm": 13, "1 pm": 13, "1pm": 13,
+		"2:00 pm": 14, "2 pm": 14, "2pm": 14,
+		"3:00 pm": 15, "3 pm": 15, "3pm": 15,
+		"4:00 pm": 16, "4 pm": 16, "4pm": 16,
+		"5:00 pm": 17, "5 pm": 17, "5pm": 17,
+		"9:00 am": 9, "9 am": 9, "9am": 9,
+		"10:00 am": 10, "10 am": 10, "10am": 10,
+		"11:00 am": 11, "11 am": 11, "11am": 11,
+		"12:00 pm": 12, "12 pm": 12, "12pm": 12,
+	}
+	
+	for pattern, hour := range timePatterns {
+		if strings.Contains(question, pattern) {
+			return time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), hour, 0, 0, 0, targetDate.Location())
+		}
+	}
+	
+	// Default to 9 AM
+	return time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), 9, 0, 0, 0, targetDate.Location())
+}
+
+// extractDuration extracts the duration from the question
+func (q *QueryProcessor) extractDuration(question string) time.Duration {
+	if strings.Contains(question, "2 hours") || strings.Contains(question, "2 hour") {
+		return 2 * time.Hour
+	} else if strings.Contains(question, "3 hours") || strings.Contains(question, "3 hour") {
+		return 3 * time.Hour
+	} else if strings.Contains(question, "30 min") || strings.Contains(question, "30 minutes") {
+		return 30 * time.Minute
+	} else if strings.Contains(question, "45 min") || strings.Contains(question, "45 minutes") {
+		return 45 * time.Minute
+	} else if strings.Contains(question, "1 hour") {
+		return time.Hour
+	}
+	
+	return time.Hour // Default to 1 hour
+}
+
+// getNextWeekday returns the next occurrence of the specified weekday
+func (q *QueryProcessor) getNextWeekday(now time.Time, weekday time.Weekday) time.Time {
+	daysUntil := int(weekday - now.Weekday())
+	if daysUntil <= 0 {
+		daysUntil += 7
+	}
+	return now.AddDate(0, 0, daysUntil)
+}
+
+// processAIQuery uses AI to understand and process the query
+func (q *QueryProcessor) processAIQuery(question string, context models.QueryContext) (*models.QueryResponse, error) {
+	if !q.aiManager.HasClients() {
+		// Fallback to enhanced rule-based processing
+		response := q.processEnhancedRuleBasedQuery(question, context)
+		if response != nil {
+			return response, nil
+		}
+		return &models.QueryResponse{
+			Answer:  "I can help with basic calendar queries, but AI-powered responses are not available right now.",
+			Success: false,
+			Error:   "No AI clients configured",
+		}, nil
+	}
+
+	prompt := q.createUnifiedPrompt(question, context)
+	aiResponse, err := q.aiManager.GeneratePlan(prompt)
+	if err != nil {
+		// Fallback to enhanced rule-based processing
+		response := q.processEnhancedRuleBasedQuery(question, context)
+		if response != nil {
+			return response, nil
+		}
+		return &models.QueryResponse{
+			Answer:  "I'm sorry, I couldn't process your request right now. Please try again later.",
+			Success: false,
+			Error:   err.Error(),
+		}, err
+	}
+
+	// Try to parse AI response as JSON
+	var response models.QueryResponse
+	if err := json.Unmarshal([]byte(aiResponse), &response); err != nil {
+		// If JSON parsing fails, treat as plain text answer
+		return &models.QueryResponse{
+			Answer:  aiResponse,
+			Success: true,
+			Action:  "view",
+		}, nil
+	}
+
+	return &response, nil
+}
+
+// processEnhancedRuleBasedQuery provides enhanced rule-based processing
+func (q *QueryProcessor) processEnhancedRuleBasedQuery(question string, context models.QueryContext) *models.QueryResponse {
+	question = strings.ToLower(strings.TrimSpace(question))
+
+	// Enhanced scheduling detection
+	if q.isSchedulingQuery(question) {
+		return q.handleAdvancedScheduling(question, context)
+	}
+
+	// Enhanced deletion detection
+	if q.isDeleteRequest(question) {
+		response := q.handleDeleteIntent(question, context)
+		response.Action = "delete"
+		return response
+	}
+
+	// All other queries are treated as view operations
+	if response := q.processViewQuery(question, context); response != nil {
+		response.Action = "view"
+		return response
+	}
+
+	return &models.QueryResponse{
+		Answer:  "I'm not sure how to help with that. You can ask me to create events, view your schedule, or delete events.",
+		Success: false,
+		Action:  "view",
+	}
+}
+
+// processViewQuery handles view-only queries
+func (q *QueryProcessor) processViewQuery(question string, context models.QueryContext) *models.QueryResponse {
+	question = strings.ToLower(strings.TrimSpace(question))
+
+	// Events for tomorrow or a specific day
+	if strings.Contains(question, "tomorrow") || strings.Contains(question, "next day") || strings.Contains(question, "day after tomorrow") {
+		return q.getEventsForSpecificDay(question, context)
+	}
+
+	// Show/display all upcoming events
+	if (strings.Contains(question, "upcoming") && strings.Contains(question, "event")) ||
+		(strings.Contains(question, "show") && strings.Contains(question, "event")) ||
+		(strings.Contains(question, "display") && strings.Contains(question, "event")) {
 		return q.getAllUpcomingEvents(context)
 	}
 
@@ -83,253 +557,140 @@ func (q *QueryProcessor) processRuleBasedQuery(question string, context models.Q
 		return q.findFreeTime(context)
 	}
 
-	return nil // No rule-based match found
+	return nil
 }
 
-func (q *QueryProcessor) isSchedulingQuery(question string) bool {
-	schedulingKeywords := []string{
-		"schedule", "book", "add", "create", "set up", "plan",
-		"meeting", "appointment", "event", "reminder",
-	}
+// createUnifiedPrompt creates a prompt for AI processing
+func (q *QueryProcessor) createUnifiedPrompt(question string, context models.QueryContext) string {
+	currentTime := context.CurrentTime.Format("2006-01-02 15:04:05")
 	
-	timeKeywords := []string{
-		"at", "on", "tomorrow", "today", "next week", "monday", "tuesday",
-		"wednesday", "thursday", "friday", "saturday", "sunday",
-		"am", "pm", "o'clock", ":",
-	}
-	
-	hasSchedulingKeyword := false
-	hasTimeKeyword := false
-	
-	for _, keyword := range schedulingKeywords {
-		if strings.Contains(question, keyword) {
-			hasSchedulingKeyword = true
-			break
+	// Create a summary of current events
+	var eventSummary string
+	if len(context.TodaysEvents) > 0 {
+		eventSummary += fmt.Sprintf("Today's events (%d):\n", len(context.TodaysEvents))
+		for _, event := range context.TodaysEvents {
+			eventSummary += fmt.Sprintf("- %s at %s\n", event.Summary, utils.FormatTime(event.Start))
 		}
 	}
 	
-	for _, keyword := range timeKeywords {
-		if strings.Contains(question, keyword) {
-			hasTimeKeyword = true
-			break
+	if len(context.UpcomingEvents) > 0 {
+		eventSummary += fmt.Sprintf("Upcoming events (%d):\n", len(context.UpcomingEvents))
+		for _, event := range context.UpcomingEvents {
+			eventSummary += fmt.Sprintf("- %s at %s\n", event.Summary, utils.FormatTime(event.Start))
 		}
 	}
 	
-	return hasSchedulingKeyword && hasTimeKeyword
-}
-
-func (q *QueryProcessor) handleSchedulingQuery(question string, context models.QueryContext) *models.QueryResponse {
-	// Use AI to parse the scheduling request
-	if !q.aiManager.HasClients() {
-		return &models.QueryResponse{
-			Answer:  "I can't schedule events right now because AI service is not available. Please use the /api/schedule endpoint instead.",
-			Success: false,
-			Error:   "No AI clients configured",
-		}
+	if eventSummary == "" {
+		eventSummary = "No events scheduled."
 	}
 
-	prompt := q.createSchedulingPrompt(question, context)
-	aiResponse, err := q.aiManager.GeneratePlan(prompt)
-	if err != nil {
-		return &models.QueryResponse{
-			Answer:  "Sorry, I couldn't understand your scheduling request. Please try using the /api/schedule endpoint with a clear description.",
-			Success: false,
-			Error:   err.Error(),
-		}
-	}
-
-	// Parse the AI response to extract event details
-	cleanResponse := q.cleanAIResponse(aiResponse)
-
-	// Try to parse as JSON first
-	var schedulingResponse struct {
-		Action  string        `json:"action"`
-		Events  []models.Task `json:"events"`
-		Message string        `json:"message"`
-	}
-
-	if err := json.Unmarshal([]byte(cleanResponse), &schedulingResponse); err != nil {
-		return &models.QueryResponse{
-			Answer:  fmt.Sprintf("I understood you want to schedule something, but I need more specific details. Please try: 'Schedule a meeting with John tomorrow at 2 PM for 1 hour'"),
-			Success: false,
-			Error:   "Could not parse scheduling request",
-		}
-	}
-
-	// Handle scheduling
-	if schedulingResponse.Action == "schedule" && len(schedulingResponse.Events) > 0 {
-		return &models.QueryResponse{
-			Answer:  fmt.Sprintf("I've prepared your scheduling request: %s.", schedulingResponse.Message),
-			Events:  schedulingResponse.Events,
-			Success: true,
-		}
-	}
-
-	   // Handle deletion
-	   if schedulingResponse.Action == "delete" && len(schedulingResponse.Events) > 0 {
-			   var deleted []string
-			   var failed []string
-			   for _, e := range schedulingResponse.Events {
-					   if e.EventID != "" {
-							   err := q.calendarClient.DeleteEvent(e.EventID)
-							   if err != nil {
-									   failed = append(failed, e.Summary)
-							   } else {
-									   deleted = append(deleted, e.Summary)
-							   }
-					   } else {
-							   // fallback to summary/time if no event ID
-							   err := q.calendarClient.DeleteEventBySummaryAndTime(e.Summary, e.Start, e.End)
-							   if err != nil {
-									   failed = append(failed, e.Summary)
-							   } else {
-									   deleted = append(deleted, e.Summary)
-							   }
-					   }
-			   }
-			   answer := ""
-			   if len(deleted) > 0 {
-					   answer += fmt.Sprintf("Deleted events: %s. ", strings.Join(deleted, ", "))
-			   }
-			   if len(failed) > 0 {
-					   answer += fmt.Sprintf("Failed to delete: %s.", strings.Join(failed, ", "))
-			   }
-			   return &models.QueryResponse{
-					   Answer:  strings.TrimSpace(answer),
-					   Success: len(failed) == 0,
-					   Events:  schedulingResponse.Events,
-			   }
-	   }
-
-	return &models.QueryResponse{
-		Answer:  "I couldn't extract clear scheduling or deletion details from your request. Please be more specific about the time, date, and event details.",
-		Success: false,
-	}
-}
-
-func (q *QueryProcessor) createSchedulingPrompt(question string, context models.QueryContext) string {
-	now := context.CurrentTime
-	today := now.Format("2006-01-02")
-	
-	prompt := fmt.Sprintf(`You are a scheduling assistant. Parse the user's scheduling or deletion request and extract event details.
+	prompt := fmt.Sprintf(`
+You are a calendar assistant that can CREATE, VIEW, and DELETE events. Analyze the user's request and respond with a JSON object.
 
 Current time: %s
-Today's date: %s
-Timezone: %s
 
-USER REQUEST: %s
+Calendar events:
+%s
 
-EXISTING EVENTS TODAY:
-`, now.Format("2006-01-02 15:04"), today, context.TimeZone, question)
+User request: "%s"
 
-	if len(context.TodaysEvents) == 0 {
-		prompt += "No events scheduled for today.\n"
-	} else {
-		for _, event := range context.TodaysEvents {
-			prompt += fmt.Sprintf("- %s from %s to %s\n", 
-				event.Summary, 
-				utils.FormatTime(event.Start), 
-				utils.FormatTime(event.End))
-		}
-	}
-
-	prompt += fmt.Sprintf(`
-Please analyze the request and respond with ONLY a JSON object in one of these formats:
-
-For scheduling:
+Respond with a JSON object in this format:
 {
-  "action": "schedule",
-  "message": "Brief description of what will be scheduled",
+  "answer": "Your response to the user",
+  "success": true,
+  "action": "create|view|delete",
   "events": [
-	{
-	  "summary": "Event Title",
-	  "start": "%sT14:00:00+05:30",
-	  "end": "%sT15:00:00+05:30"
-	}
-  ]
-}
-
-For deletion (if the user provides an event ID, include it in the event object as 'event_id'):
-{
-  "action": "delete",
-  "message": "Brief description of what will be deleted",
-  "events": [
-	{
-	  "summary": "Event Title",
-	  "start": "%sT14:00:00+05:30",
-	  "end": "%sT15:00:00+05:30",
-	  "event_id": "the-event-id-if-provided"
-	}
+    {
+      "summary": "Event Title",
+      "start": "2024-01-15T14:00:00Z",
+      "end": "2024-01-15T15:00:00Z",
+      "location": "Optional location",
+      "description": "Optional description"
+    }
   ]
 }
 
 Rules:
-1. Use ISO 8601 format with +05:30 timezone
-2. If no specific time is mentioned, suggest a reasonable time
-3. If no duration is mentioned, default to 1 hour
-4. If date is relative (tomorrow, next week), calculate the actual date
-5. Make sure the event doesn't conflict with existing events
-6. If the request is unclear, set action to "clarify" instead
-7. If the user provides an event ID for deletion, always include it as 'event_id' in the event object.
+1. For CREATE requests: Set action to "create" and include event details in events array
+2. For VIEW requests: Set action to "view" and include relevant events in events array
+3. For DELETE requests: Set action to "delete" and include events to delete in events array
+4. Always use RFC3339 format for dates (YYYY-MM-DDTHH:MM:SSZ)
+5. If creating events, avoid conflicts with existing events
+6. Be helpful and conversational in your answer
 
-Respond with ONLY the JSON object, no markdown code blocks.`, today, today, today, today)
+Examples:
+- "Schedule gym tomorrow at 2pm" → action: "create"
+- "What's my schedule today?" → action: "view"
+- "Delete my gym session" → action: "delete"
+`, currentTime, eventSummary, question)
 
 	return prompt
 }
 
-// processAIQuery uses AI to process complex queries
-func (q *QueryProcessor) processAIQuery(question string, context models.QueryContext) (*models.QueryResponse, error) {
-	if !q.aiManager.HasClients() {
-		return &models.QueryResponse{
-			Answer:  "AI service not available. Please try simpler queries like 'when is my next meeting?' or 'what time is gym?'",
-			Success: false,
-			Error:   "No AI clients configured",
-		}, nil
-	}
-
-	prompt := q.createQueryPrompt(question, context)
+// getEventsForSpecificDay gets events for a specific day
+func (q *QueryProcessor) getEventsForSpecificDay(question string, context models.QueryContext) *models.QueryResponse {
+	var targetDate time.Time
+	now := context.CurrentTime
 	
-	aiResponse, err := q.aiManager.GeneratePlan(prompt)
-	if err != nil {
-		return &models.QueryResponse{
-			Answer:  "Sorry, I couldn't process your question. Please try asking about specific events like 'gym time' or 'next meeting'.",
-			Success: false,
-			Error:   err.Error(),
-		}, nil
+	explicitDate := extractDateFromQuestion(question)
+	if explicitDate != "" {
+		parsed := false
+		for _, layout := range []string{"2 Jan 2006", "2 January 2006", "02-01-2006", "2006-01-02", "2nd January 2006", "2nd Jan 2006", "2/1/2006", "2.1.2006", "2 july 2006", "2nd july 2006", "02/01/2006", "13/07/2025", "13-07-2025"} {
+			t, err := time.Parse(layout, explicitDate)
+			if err == nil {
+				targetDate = t
+				parsed = true
+				break
+			}
+		}
+		if !parsed {
+			targetDate = now
+		}
+	} else if strings.Contains(question, "tomorrow") {
+		targetDate = now.AddDate(0, 0, 1)
+	} else if strings.Contains(question, "day after tomorrow") {
+		targetDate = now.AddDate(0, 0, 2)
+	} else if strings.Contains(question, "next day") {
+		targetDate = now.AddDate(0, 0, 1)
+	} else {
+		targetDate = now
 	}
-
-	// Clean up AI response - remove markdown code blocks
-	cleanResponse := q.cleanAIResponse(aiResponse)
-
-	// Try to parse AI response as JSON
-	var response models.QueryResponse
-	if err := json.Unmarshal([]byte(cleanResponse), &response); err != nil {
-		// If JSON parsing fails, treat the response as plain text
+	
+	dateStr := targetDate.Format("2006-01-02")
+	var eventsForDay []models.Task
+	allEvents := append(context.TodaysEvents, context.UpcomingEvents...)
+	
+	for _, event := range allEvents {
+		eventTime, err := time.Parse(time.RFC3339, event.Start)
+		if err != nil {
+			continue
+		}
+		if eventTime.Format("2006-01-02") == dateStr {
+			eventsForDay = append(eventsForDay, event)
+		}
+	}
+	
+	if len(eventsForDay) == 0 {
 		return &models.QueryResponse{
-			Answer:  strings.TrimSpace(cleanResponse),
+			Answer:  fmt.Sprintf("You have no events scheduled for %s.", targetDate.Format("Monday, January 2")),
 			Success: true,
-		}, nil
-	}
-
-	return &response, nil
-}
-
-// cleanAIResponse removes markdown code blocks and cleans up AI response
-func (q *QueryProcessor) cleanAIResponse(response string) string {
-	response = strings.TrimSpace(response)
-	
-	// Remove markdown code blocks
-	if strings.HasPrefix(response, "```json") {
-		response = strings.TrimPrefix(response, "```json")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
-	} else if strings.HasPrefix(response, "```") {
-		response = strings.TrimPrefix(response, "```")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
+		}
 	}
 	
-	return response
+	answer := fmt.Sprintf("You have %d event(s) on %s:\n", len(eventsForDay), targetDate.Format("Monday, January 2"))
+	for i, event := range eventsForDay {
+		answer += fmt.Sprintf("%d. %s at %s", i+1, event.Summary, utils.FormatTime(event.Start))
+		if event.Location != "" {
+			answer += fmt.Sprintf(" (%s)", event.Location)
+		}
+		answer += "\n"
+	}
+	
+	return &models.QueryResponse{
+		Answer:  strings.TrimSpace(answer),
+		Events:  eventsForDay,
+		Success: true,
+	}
 }
 
 // getAllUpcomingEvents returns all upcoming events
@@ -343,281 +704,360 @@ func (q *QueryProcessor) getAllUpcomingEvents(context models.QueryContext) *mode
 		}
 	}
 
-	// Filter events that are in the future
-	now := context.CurrentTime
-	var futureEvents []models.Task
-	
-	for _, event := range allEvents {
-		eventTime, err := time.Parse(time.RFC3339, event.Start)
-		if err != nil {
-			continue
+	answer := fmt.Sprintf("You have %d upcoming event(s):\n", len(allEvents))
+	for i, event := range allEvents {
+		answer += fmt.Sprintf("%d. %s at %s", i+1, event.Summary, utils.FormatTime(event.Start))
+		if event.Location != "" {
+			answer += fmt.Sprintf(" (%s)", event.Location)
 		}
-		
-		if eventTime.After(now) {
-			futureEvents = append(futureEvents, event)
-		}
+		answer += "\n"
 	}
 
-	if len(futureEvents) == 0 {
+	return &models.QueryResponse{
+		Answer:  strings.TrimSpace(answer),
+		Events:  allEvents,
+		Success: true,
+	}
+}
+
+// findNextEvent finds the next upcoming event
+// findNextEvent finds the next upcoming event
+func (q *QueryProcessor) findNextEvent(context models.QueryContext) *models.QueryResponse {
+	allEvents := append(context.TodaysEvents, context.UpcomingEvents...)
+	
+	if len(allEvents) == 0 {
 		return &models.QueryResponse{
 			Answer:  "You have no upcoming events scheduled.",
 			Success: true,
 		}
 	}
 
-	   // Build response
-	   answer := fmt.Sprintf("You have %d upcoming events:\n\n", len(futureEvents))
-	   for i, event := range futureEvents {
-			   eventTime, err := time.Parse(time.RFC3339, event.Start)
-			   if err != nil {
-					   continue
-			   }
-			   // Format the date and time nicely
-			   var timeDesc string
-			   if eventTime.Format("2006-01-02") == now.Format("2006-01-02") {
-					   timeDesc = fmt.Sprintf("Today at %s", utils.FormatTime(event.Start))
-			   } else {
-					   timeDesc = fmt.Sprintf("%s at %s", eventTime.Format("Mon Jan 2"), utils.FormatTime(event.Start))
-			   }
-			   // Show event ID if present
-			   eventIDStr := ""
-			   if event.EventID != "" {
-					   eventIDStr = fmt.Sprintf(" [ID: %s]", event.EventID)
-			   }
-			   answer += fmt.Sprintf("%d. %s - %s%s", i+1, event.Summary, timeDesc, eventIDStr)
-			   if event.Location != "" {
-					   answer += fmt.Sprintf(" (%s)", event.Location)
-			   }
-			   answer += "\n"
-	   }
-
-	return &models.QueryResponse{
-		Answer:  strings.TrimSpace(answer),
-		Events:  futureEvents,
-		Success: true,
-	}
-}
-
-// createQueryPrompt creates a prompt for AI query processing
-func (q *QueryProcessor) createQueryPrompt(question string, context models.QueryContext) string {
-	prompt := fmt.Sprintf(`You are a personal calendar assistant. Answer the user's question about their calendar.
-
-Current time: %s
-Timezone: %s
-
-TODAY'S EVENTS:
-`, context.CurrentTime.Format("2006-01-02 15:04"), context.TimeZone)
-
-	if len(context.TodaysEvents) == 0 {
-		prompt += "No events scheduled for today.\n"
-	} else {
-		for _, event := range context.TodaysEvents {
-			prompt += fmt.Sprintf("- %s from %s to %s", 
-				event.Summary, 
-				utils.FormatTime(event.Start), 
-				utils.FormatTime(event.End))
-			if event.Location != "" {
-				prompt += fmt.Sprintf(" at %s", event.Location)
-			}
-			prompt += "\n"
-		}
-	}
-
-	prompt += "\nUPCOMING EVENTS:\n"
-	if len(context.UpcomingEvents) == 0 {
-		prompt += "No upcoming events found.\n"
-	} else {
-		for i, event := range context.UpcomingEvents {
-			if i >= 10 { // Limit to first 10 events
-				break
-			}
-			prompt += fmt.Sprintf("- %s from %s to %s", 
-				event.Summary, 
-				utils.FormatTime(event.Start), 
-				utils.FormatTime(event.End))
-			if event.Location != "" {
-				prompt += fmt.Sprintf(" at %s", event.Location)
-			}
-			prompt += "\n"
-		}
-	}
-
-	prompt += fmt.Sprintf(`
-USER QUESTION: %s
-
-Please provide a helpful, conversational answer based on the calendar information above. 
-Be specific about times and dates. If the information isn't available, say so politely.
-
-Respond with ONLY a plain text answer (no JSON, no markdown code blocks).
-Keep the response concise and user-friendly.`, question)
-
-	return prompt
-}
-
-// Helper methods for rule-based queries
-
-func (q *QueryProcessor) findNextEvent(context models.QueryContext) *models.QueryResponse {
-	now := context.CurrentTime
-	
-	// Look through all events (today's and upcoming)
-	allEvents := append(context.TodaysEvents, context.UpcomingEvents...)
-	
+	// Find the next event (events should be sorted by start time)
+	var nextEvent *models.Task
 	for _, event := range allEvents {
 		eventTime, err := time.Parse(time.RFC3339, event.Start)
 		if err != nil {
 			continue
 		}
-		
-		if eventTime.After(now) {
-			timeUntil := eventTime.Sub(now)
-			var timeDesc string
-			
-			if timeUntil < time.Hour {
-				timeDesc = fmt.Sprintf("in %d minutes", int(timeUntil.Minutes()))
-			} else if timeUntil < 24*time.Hour {
-				timeDesc = fmt.Sprintf("in %d hours", int(timeUntil.Hours()))
-			} else {
-			timeDesc = fmt.Sprintf("on %s", eventTime.Format("Monday, January 2"))
+		if eventTime.After(context.CurrentTime) {
+			nextEvent = &event
+			break
 		}
-		
-		answer := fmt.Sprintf("Your next event is '%s' %s at %s", 
-			event.Summary, timeDesc, utils.FormatTime(event.Start))
-		
-		if event.Location != "" {
-			answer += fmt.Sprintf(" at %s", event.Location)
-		}
-		
+	}
+
+	if nextEvent == nil {
 		return &models.QueryResponse{
-			Answer:  answer,
-			Events:  []models.Task{event},
+			Answer:  "You have no upcoming events scheduled.",
 			Success: true,
 		}
 	}
+
+	answer := fmt.Sprintf("Your next event is: %s at %s", nextEvent.Summary, utils.FormatTime(nextEvent.Start))
+	if nextEvent.Location != "" {
+		answer += fmt.Sprintf(" (%s)", nextEvent.Location)
+	}
+
+	return &models.QueryResponse{
+		Answer:  answer,
+		Events:  []models.Task{*nextEvent},
+		Success: true,
+	}
 }
 
-return &models.QueryResponse{
-	Answer:  "You don't have any upcoming events scheduled.",
-	Success: true,
-}
-}
-
+// findEventByKeyword finds events by keyword
 func (q *QueryProcessor) findEventByKeyword(keyword string, context models.QueryContext) *models.QueryResponse {
-var matchingEvents []models.Task
-
-// Search in all events
-allEvents := append(context.TodaysEvents, context.UpcomingEvents...)
-
-for _, event := range allEvents {
-	if strings.Contains(strings.ToLower(event.Summary), keyword) {
-		matchingEvents = append(matchingEvents, event)
-	}
-}
-
-if len(matchingEvents) == 0 {
-	return &models.QueryResponse{
-		Answer:  fmt.Sprintf("I couldn't find any %s events in your calendar.", keyword),
-		Success: true,
-	}
-}
-
-event := matchingEvents[0]
-eventTime, _ := time.Parse(time.RFC3339, event.Start)
-
-var answer string
-if event.Start != "" {
-	if eventTime.Format("2006-01-02") == time.Now().Format("2006-01-02") {
-		answer = fmt.Sprintf("Your %s is today at %s", keyword, utils.FormatTime(event.Start))
-	} else {
-		answer = fmt.Sprintf("Your %s is on %s at %s", 
-			keyword, eventTime.Format("Monday, January 2"), utils.FormatTime(event.Start))
-	}
+	allEvents := append(context.TodaysEvents, context.UpcomingEvents...)
+	var matchingEvents []models.Task
 	
-	if event.Location != "" {
-		answer += fmt.Sprintf(" at %s", event.Location)
-	}
-} else {
-	answer = fmt.Sprintf("Found %s event: %s", keyword, event.Summary)
-}
-
-return &models.QueryResponse{
-	Answer:  answer,
-	Events:  []models.Task{event},
-	Success: true,
-}
-}
-
-func (q *QueryProcessor) getTodaysSchedule(context models.QueryContext) *models.QueryResponse {
-if len(context.TodaysEvents) == 0 {
-	return &models.QueryResponse{
-		Answer:  "You have no events scheduled for today.",
-		Success: true,
-	}
-}
-
-answer := fmt.Sprintf("You have %d events today:\n", len(context.TodaysEvents))
-for i, event := range context.TodaysEvents {
-	answer += fmt.Sprintf("%d. %s at %s", i+1, event.Summary, utils.FormatTime(event.Start))
-	if event.Location != "" {
-		answer += fmt.Sprintf(" (%s)", event.Location)
-	}
-	answer += "\n"
-}
-
-return &models.QueryResponse{
-	Answer:  strings.TrimSpace(answer),
-	Events:  context.TodaysEvents,
-	Success: true,
-}
-}
-
-func (q *QueryProcessor) findFreeTime(context models.QueryContext) *models.QueryResponse {
-now := context.CurrentTime
-
-// Simple free time detection - find gaps between events
-if len(context.TodaysEvents) == 0 {
-	return &models.QueryResponse{
-		Answer:  "You're free all day today!",
-		Success: true,
-	}
-}
-
-// Sort events by start time and find gaps
-var freeSlots []string
-
-// Check if free before first event
-if len(context.TodaysEvents) > 0 {
-	firstEventTime, err := time.Parse(time.RFC3339, context.TodaysEvents[0].Start)
-	if err == nil && firstEventTime.After(now.Add(time.Hour)) {
-		freeSlots = append(freeSlots, fmt.Sprintf("Free until %s", utils.FormatTime(context.TodaysEvents[0].Start)))
-	}
-}
-
-// Check gaps between events
-for i := 0; i < len(context.TodaysEvents)-1; i++ {
-	currentEnd, err1 := time.Parse(time.RFC3339, context.TodaysEvents[i].End)
-	nextStart, err2 := time.Parse(time.RFC3339, context.TodaysEvents[i+1].Start)
-	
-	if err1 == nil && err2 == nil {
-		gap := nextStart.Sub(currentEnd)
-		if gap > 30*time.Minute { // Only mention gaps longer than 30 minutes
-			freeSlots = append(freeSlots, fmt.Sprintf("Free from %s to %s", 
-				utils.FormatTime(context.TodaysEvents[i].End), 
-				utils.FormatTime(context.TodaysEvents[i+1].Start)))
+	for _, event := range allEvents {
+		if strings.Contains(strings.ToLower(event.Summary), keyword) {
+			matchingEvents = append(matchingEvents, event)
 		}
 	}
-}
 
-if len(freeSlots) == 0 {
+	if len(matchingEvents) == 0 {
+		return &models.QueryResponse{
+			Answer:  fmt.Sprintf("No events found related to '%s'.", keyword),
+			Success: true,
+		}
+	}
+
+	answer := fmt.Sprintf("Found %d event(s) related to '%s':\n", len(matchingEvents), keyword)
+	for i, event := range matchingEvents {
+		answer += fmt.Sprintf("%d. %s at %s", i+1, event.Summary, utils.FormatTime(event.Start))
+		if event.Location != "" {
+			answer += fmt.Sprintf(" (%s)", event.Location)
+		}
+		answer += "\n"
+	}
+
 	return &models.QueryResponse{
-		Answer:  "Your schedule looks pretty packed today with no significant free time slots.",
+		Answer:  strings.TrimSpace(answer),
+		Events:  matchingEvents,
 		Success: true,
 	}
 }
 
-answer := "Here are your free time slots:\n" + strings.Join(freeSlots, "\n")
+// getTodaysSchedule returns today's schedule
+func (q *QueryProcessor) getTodaysSchedule(context models.QueryContext) *models.QueryResponse {
+	if len(context.TodaysEvents) == 0 {
+		return &models.QueryResponse{
+			Answer:  "You have no events scheduled for today.",
+			Success: true,
+		}
+	}
 
-return &models.QueryResponse{
-	Answer:  answer,
-	Success: true,
+	answer := fmt.Sprintf("Today's schedule (%d event(s)):\n", len(context.TodaysEvents))
+	for i, event := range context.TodaysEvents {
+		answer += fmt.Sprintf("%d. %s at %s", i+1, event.Summary, utils.FormatTime(event.Start))
+		if event.Location != "" {
+			answer += fmt.Sprintf(" (%s)", event.Location)
+		}
+		answer += "\n"
+	}
+
+	return &models.QueryResponse{
+		Answer:  strings.TrimSpace(answer),
+		Events:  context.TodaysEvents,
+		Success: true,
+	}
 }
+
+// findFreeTime finds available free time slots
+func (q *QueryProcessor) findFreeTime(context models.QueryContext) *models.QueryResponse {
+	allEvents := append(context.TodaysEvents, context.UpcomingEvents...)
+	
+	if len(allEvents) == 0 {
+		return &models.QueryResponse{
+			Answer:  "You have no scheduled events, so you're free all day!",
+			Success: true,
+		}
+	}
+
+	// Simple free time calculation - find gaps between events
+	now := context.CurrentTime
+	var freeSlots []string
+	
+	// Check if free right now
+	hasCurrentEvent := false
+	for _, event := range allEvents {
+		startTime, err := time.Parse(time.RFC3339, event.Start)
+		if err != nil {
+			continue
+		}
+		endTime, err := time.Parse(time.RFC3339, event.End)
+		if err != nil {
+			endTime = startTime.Add(time.Hour) // Default 1 hour duration
+		}
+		
+		if now.After(startTime) && now.Before(endTime) {
+			hasCurrentEvent = true
+			break
+		}
+	}
+	
+	if !hasCurrentEvent {
+		freeSlots = append(freeSlots, "Right now")
+	}
+	
+	// Find next free slot after current time
+	nextFreeTime := now.Add(time.Hour)
+	for _, event := range allEvents {
+		startTime, err := time.Parse(time.RFC3339, event.Start)
+		if err != nil {
+			continue
+		}
+		if startTime.After(nextFreeTime) {
+			freeSlots = append(freeSlots, fmt.Sprintf("After %s", utils.FormatTime(nextFreeTime.Format(time.RFC3339))))
+			break
+		}
+	}
+	
+	if len(freeSlots) == 0 {
+		return &models.QueryResponse{
+			Answer:  "Your schedule looks quite busy. Consider checking for longer gaps between events.",
+			Success: true,
+		}
+	}
+	
+	answer := fmt.Sprintf("You appear to be free: %s", strings.Join(freeSlots, ", "))
+	return &models.QueryResponse{
+		Answer:  answer,
+		Success: true,
+	}
+}
+
+// Helper functions for date/time extraction
+func extractDateFromQuestion(question string) string {
+	lower := strings.ToLower(question)
+	words := strings.Fields(lower)
+	
+	for i := 0; i < len(words)-2; i++ {
+		if isDay(words[i]) && isMonth(words[i+1]) && isYear(words[i+2]) {
+			return words[i] + " " + words[i+1] + " " + words[i+2]
+		}
+	}
+	
+	for _, word := range words {
+		if len(word) == 10 && word[4] == '-' && word[7] == '-' {
+			return word
+		}
+	}
+	
+	for _, word := range words {
+		if len(word) == 10 && (word[2] == '/' || word[2] == '-') && (word[5] == '/' || word[5] == '-') {
+			return word
+		}
+	}
+	
+	return ""
+}
+
+func isDay(s string) bool {
+	s = strings.TrimSuffix(s, "st")
+	s = strings.TrimSuffix(s, "nd")
+	s = strings.TrimSuffix(s, "rd")
+	s = strings.TrimSuffix(s, "th")
+	if len(s) == 1 || len(s) == 2 {
+		for _, c := range s {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func isMonth(s string) bool {
+	months := []string{"january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"}
+	for _, m := range months {
+		if s == m {
+			return true
+		}
+	}
+	return false
+}
+
+func isYear(s string) bool {
+	if len(s) == 4 {
+		for _, c := range s {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// extractEventKeyword tries to extract a keyword from the delete question
+func extractEventKeyword(question string) string {
+	lower := strings.ToLower(question)
+	for _, kw := range []string{"delete", "remove", "cancel", "clear"} {
+		idx := strings.Index(lower, kw)
+		if idx != -1 {
+			rest := strings.TrimSpace(lower[idx+len(kw):])
+			parts := strings.Fields(rest)
+			if len(parts) > 0 {
+				return parts[0]
+			}
+		}
+	}
+	return ""
+}
+// handleSchedulingQuery processes scheduling queries and sets action to "create"
+func (q *QueryProcessor) handleSchedulingQuery(question string, context models.QueryContext) *models.QueryResponse {
+	if !q.aiManager.HasClients() {
+		return &models.QueryResponse{
+			Answer:  "I can't schedule events right now because AI service is not available. Please use the /api/schedule endpoint instead.",
+			Success: false,
+			Action:  "create",
+			Error:   "No AI clients configured",
+		}
+	}
+
+	prompt := q.createSchedulingPrompt(question, context)
+	aiResponse, err := q.aiManager.GeneratePlan(prompt)
+	if err != nil {
+		return &models.QueryResponse{
+			Answer:  "Sorry, I couldn't understand your scheduling request. Please try rephrasing it.",
+			Success: false,
+			Action:  "create",
+			Error:   err.Error(),
+		}
+	}
+
+	// Parse the AI response to extract event details
+	tasks, err := utils.ParsePlan(aiResponse)
+	if err != nil {
+		return &models.QueryResponse{
+			Answer:  "I understood your request but couldn't create a properly formatted event. Please try again.",
+			Success: false,
+			Action:  "create",
+			Error:   err.Error(),
+		}
+	}
+
+	if len(tasks) == 0 {
+		return &models.QueryResponse{
+			Answer:  "I couldn't identify any events to create from your request.",
+			Success: false,
+			Action:  "create",
+		}
+	}
+
+	// Create a summary of what will be created
+	var eventNames []string
+	for _, task := range tasks {
+		eventNames = append(eventNames, task.Summary)
+	}
+
+	answer := fmt.Sprintf("I'll create %d event(s): %s", len(tasks), strings.Join(eventNames, ", "))
+
+	return &models.QueryResponse{
+		Answer:  answer,
+		Success: true,
+		Action:  "create",
+		Events:  tasks,
+	}
+}
+func (q *QueryProcessor) createSchedulingPrompt(question string, context models.QueryContext) string {
+	currentTime := context.CurrentTime.Format("2006-01-02 15:04:05")
+	
+	prompt := fmt.Sprintf(`
+You are a calendar assistant. The user wants to schedule an event based on their request: "%s"
+
+Current time: %s
+Current timezone: Asia/Kolkata
+
+Please extract the event details and respond with a JSON array containing the events to create.
+Each event should have:
+- summary: The event title
+- start: The start time in RFC3339 format with timezone
+- end: The end time in RFC3339 format with timezone (default 1 hour duration if not specified)
+- location: The location (if mentioned, otherwise empty)
+- description: Additional details (if any, otherwise empty)
+
+Example response:
+[
+  {
+    "summary": "Team Meeting",
+    "start": "2025-01-15T14:00:00+05:30",
+    "end": "2025-01-15T15:00:00+05:30",
+    "location": "",
+    "description": ""
+  }
+]
+
+Important:
+- Use Asia/Kolkata timezone (+05:30)
+- If no specific time is mentioned, use reasonable defaults
+- If duration is not specified, default to 1 hour
+- Only respond with the JSON array, no additional text
+
+User request: "%s"
+`, question, currentTime, question)
+
+	return prompt
 }

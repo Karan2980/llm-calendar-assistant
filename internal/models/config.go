@@ -10,8 +10,6 @@ type Config struct {
 // AIConfig holds AI service configuration
 type AIConfig struct {
 	GitHubToken      string `json:"github_token"`
-	OpenAIKey        string `json:"openai_key"`
-	HuggingFaceToken string `json:"huggingface_token"`
 }
 
 // CalendarConfig holds calendar configuration

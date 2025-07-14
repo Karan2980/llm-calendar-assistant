@@ -30,25 +30,25 @@ func GetCalendarService(ctx context.Context) (*calendar.Service, error) {
 
 	// Fallback to file-based auth
 	projectRoot := getProjectRoot()
-	config := models.AuthConfig{
-		ServiceAccountPath: filepath.Join(projectRoot, "service-account.json"),
-		CredentialsPath:    filepath.Join(projectRoot, "credentials.json"),
-		TokenPath:          filepath.Join(projectRoot, "token.json"),
-	}
+	// config := models.AuthConfig{
+	// 	ServiceAccountPath: filepath.Join(projectRoot, "service-account.json"),
+	// 	CredentialsPath:    filepath.Join(projectRoot, "credentials.json"),
+	// 	TokenPath:          filepath.Join(projectRoot, "token.json"),
+	// }
 
 	fmt.Printf("📁 Looking for credentials in: %s\n", projectRoot)
 	
 	// Try service account first
-	if _, err := os.Stat(config.ServiceAccountPath); err == nil {
-		fmt.Println("✅ Using service account authentication")
-		return getServiceAccountCalendarService(ctx, config.ServiceAccountPath)
-	}
+	// if _, err := os.Stat(config.ServiceAccountPath); err == nil {
+	// 	fmt.Println("✅ Using service account authentication")
+	// 	return getServiceAccountCalendarService(ctx, config.ServiceAccountPath)
+	// }
 	
-	// Fallback to OAuth
-	if _, err := os.Stat(config.CredentialsPath); err == nil {
-		fmt.Println("✅ Using OAuth file authentication")
-		return getOAuthCalendarService(ctx, config)
-	}
+	// // Fallback to OAuth
+	// if _, err := os.Stat(config.CredentialsPath); err == nil {
+	// 	fmt.Println("✅ Using OAuth file authentication")
+	// 	return getOAuthCalendarService(ctx, config)
+	// }
 	
 	return nil, fmt.Errorf("no authentication method available. Need either:\n1. Environment variables: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET\n2. Files: service-account.json or credentials.json in %s", projectRoot)
 }

@@ -36,11 +36,7 @@ func NewQueryHandler(calendarService *calendarv3.Service, aiConfig models.AIConf
 }
 
 // HandleQuery processes a user query about their calendar
-// HandleQuery processes a user query about their calendar
 func (qh *QueryHandler) HandleQuery(ctx context.Context, question string) (*models.QueryResponse, error) {
-	// Remove this debug line:
-	// fmt.Printf("🤔 Processing query: %s\n", question)
-
 	// Get calendar context
 	queryContext, err := qh.buildQueryContext()
 	if err != nil {
@@ -61,28 +57,24 @@ func (qh *QueryHandler) HandleQuery(ctx context.Context, question string) (*mode
 		}, err
 	}
 
-	// Remove this debug line:
-	// fmt.Printf("✅ Query response: %s\n", response.Answer)
 	return response, nil
 }
+
+// buildQueryContext builds the context needed for query processing
 
 // buildQueryContext builds the context needed for query processing
 func (qh *QueryHandler) buildQueryContext() (*models.QueryContext, error) {
 	now := time.Now()
 
-	// Get today's events (remove debug logs)
+	// Get today's events
 	todaysEvents, err := qh.queryService.GetTodaysSchedule()
 	if err != nil {
-		// Remove this debug line:
-		// fmt.Printf("⚠️ Warning: Could not get today's events: %v\n", err)
 		todaysEvents = []models.Task{} // Continue with empty events
 	}
 
-	// Get upcoming events (next 7 days) (remove debug logs)
+	// Get upcoming events (next 7 days)
 	upcomingEvents, err := qh.queryService.GetUpcomingEvents(7)
 	if err != nil {
-		// Remove this debug line:
-		// fmt.Printf("⚠️ Warning: Could not get upcoming events: %v\n", err)
 		upcomingEvents = []models.Task{} // Continue with empty events
 	}
 
@@ -110,8 +102,6 @@ func (qh *QueryHandler) buildQueryContext() (*models.QueryContext, error) {
 	}, nil
 }
 
-
-// RunInteractiveQuery runs an interactive query session with menu return option
 // RunInteractiveQuery runs an interactive query session with menu return option
 func (qh *QueryHandler) RunInteractiveQuery(ctx context.Context) error {
 	fmt.Println("\n🤖 Calendar Query Assistant")
@@ -121,7 +111,8 @@ func (qh *QueryHandler) RunInteractiveQuery(ctx context.Context) error {
 	fmt.Println("  - What time is gym?")
 	fmt.Println("  - What's my schedule today?")
 	fmt.Println("  - When am I free?")
-	fmt.Println("  - Do I have any work meetings tomorrow?")
+	fmt.Println("  - Schedule gym at 9am tomorrow")
+	fmt.Println("  - Delete my gym session")
 	fmt.Println("\nCommands:")
 	fmt.Println("  - Type 'menu' to return to main menu")
 	fmt.Println("  - Type 'quit' or 'exit' to stop the application")
@@ -204,7 +195,6 @@ func (qh *QueryHandler) RunInteractiveQuery(ctx context.Context) error {
 		fmt.Println()
 	}
 }
-
 
 // HandleBatchQueries processes multiple queries at once
 func (qh *QueryHandler) HandleBatchQueries(ctx context.Context, questions []string) ([]*models.QueryResponse, error) {

@@ -67,6 +67,54 @@ REMEMBER: Only return NEW tasks, not existing ones!`,
 	return prompt
 }
 
+
+// CreateRestrictivePrompt creates a prompt that only creates what's specifically requested
+// CreateRestrictivePrompt creates a prompt that only creates what's specifically requested
+func (pg *PromptGenerator) CreateRestrictivePrompt(existingTasks []models.Task, userInput string) string {
+	currentTime := time.Now().Format("2006-01-02 15:04:05")
+	
+	existingEventsStr := ""
+	if len(existingTasks) > 0 {
+		existingEventsStr = "Existing events today:\n"
+		for _, task := range existingTasks {
+			existingEventsStr += fmt.Sprintf("- %s (%s to %s)\n", task.Summary, task.Start, task.End)
+		}
+	}
+
+	prompt := fmt.Sprintf(`You are a calendar assistant. Create ONLY the specific event(s) mentioned in the user's request.
+
+IMPORTANT RULES:
+1. Create ONLY what the user explicitly asks for
+2. Do NOT suggest additional events
+3. Do NOT create a full day schedule
+4. Use realistic durations (meetings: 1 hour, gym: 1 hour, lunch: 30 min, presentation: 1 hour)
+5. If user specifies multiple events, create all of them
+
+Current time: %s
+%s
+
+User request: "%s"
+
+Respond with a JSON array of events. Each event should have:
+- summary: Event title
+- start: Start time in RFC3339 format (YYYY-MM-DDTHH:MM:SS+05:30)
+- end: End time in RFC3339 format
+
+Example response:
+[
+  {
+    "summary": "Team Meeting",
+    "start": "2025-07-15T14:00:00+05:30",
+    "end": "2025-07-15T15:00:00+05:30"
+  }
+]
+
+Only respond with the JSON array, no additional text.`, currentTime, existingEventsStr, userInput)
+
+	return prompt
+}
+
+
 // CreateReschedulingPrompt creates a prompt for rescheduling conflicting tasks
 func (p *PromptGenerator) CreateReschedulingPrompt(conflictingTasks []models.Task, existingTasks []models.Task) string {
 	now := time.Now()
